@@ -2,50 +2,160 @@ import streamlit as st
 import tensorflow as tf
 import numpy as np
 import google.generativeai as genai
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torchvision import transforms
+from PIL import Image 
 
-class_names = [ 'Tomato___Bacterial_spot', 
-                    'Tomato___Early_blight', 'Tomato___Late_blight', 'Tomato___Leaf_Mold', 
-                    'Tomato___Septoria_leaf_spot', 'Tomato___Spider_mites Two-spotted_spider_mite', 
-                    'Tomato___Target_Spot', 'Tomato___Tomato_Yellow_Leaf_Curl_Virus', 'Tomato___Tomato_mosaic_virus',
-                      'Tomato___healthy']
-# class_names = ['Apple___Apple_scab', 'Apple___Black_rot', 'Apple___Cedar_apple_rust', 'Apple___healthy',
-#                     'Blueberry___healthy', 'Cherry_(including_sour)___Powdery_mildew', 
-#                     'Cherry_(including_sour)___healthy', 'Corn_(maize)___Cercospora_leaf_spot Gray_leaf_spot', 
-#                     'Corn_(maize)___Common_rust_', 'Corn_(maize)___Northern_Leaf_Blight', 'Corn_(maize)___healthy', 
-#                     'Grape___Black_rot', 'Grape___Esca_(Black_Measles)', 'Grape___Leaf_blight_(Isariopsis_Leaf_Spot)', 
-#                     'Grape___healthy', 'Orange___Haunglongbing_(Citrus_greening)', 'Peach___Bacterial_spot',
-#                     'Peach___healthy', 'Pepper,_bell___Bacterial_spot', 'Pepper,_bell___healthy', 
-#                     'Potato___Early_blight', 'Potato___Late_blight', 'Potato___healthy', 
-#                     'Raspberry___healthy', 'Soybean___healthy', 'Squash___Powdery_mildew', 
-#                     'Strawberry___Leaf_scorch', 'Strawberry___healthy', 'Tomato___Bacterial_spot', 
-#                     'Tomato___Early_blight', 'Tomato___Late_blight', 'Tomato___Leaf_Mold', 
-#                     'Tomato___Septoria_leaf_spot', 'Tomato___Spider_mites Two-spotted_spider_mite', 
-#                     'Tomato___Target_Spot', 'Tomato___Tomato_Yellow_Leaf_Curl_Virus', 'Tomato___Tomato_mosaic_virus',
-#                       'Tomato___healthy']
 
+class_names = [  
+                'Tomato___Target_Spot',
+                'Tomato___Spider_mites-spotted_spider_mite', 
+                'Tomato___Leaf_mold', 
+                'Tomato___Late_Blight', 
+                'Tomato___Septoria_leaf_spot',
+                'Tomato___healthy', 
+                'Tomato_yellow_curl',
+                'Tomato___Bacterial_spot', 
+                'Not Leaf or Not Known',
+                'Tomato___Early_Blight',
+                'Not Known Disease',
+                'Tomato__Healthy']
+
+
+class ConvBlock(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, pool: bool = True):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+        )
+        self.pool = nn.MaxPool2d(2) if pool else nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.block(x)
+        x = self.pool(x)
+        return x
+    
+class SimpleCNN(nn.Module):
+    def __init__(self, num_classes: int):
+        super().__init__()
+        self.features = nn.Sequential(
+            ConvBlock(3, 32, pool=True),
+            ConvBlock(32, 64, pool=True),
+            ConvBlock(64, 128, pool=True),
+            ConvBlock(128, 256, pool=True),
+            ConvBlock(256, 256, pool=True),
+        )
+        self.classifier = nn.Sequential(
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(256, num_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.features(x)
+        x = self.classifier(x)
+        return x
+
+# Load your trained PyTorch model
+cnn_model = torch.load("best_model_2.pt", map_location=torch.device("cpu"))
+
+
+infer_transform = transforms.Compose([
+    transforms.Resize((224, 224)),        # Resize to IMAGE_SIZE
+    transforms.CenterCrop((224, 224)),    # Center crop
+    transforms.ToTensor(),                 # Convert to tensor
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],      # DEFAULT_MEAN
+        std=[0.229, 0.224, 0.225]        # DEFAULT_STD
+    )
+])
+# # Image transform 
+# transform = transforms.Compose([
+#     transforms.Resize((224, 224)),
+#     transforms.ToTensor(),
+#     transforms.Normalize(mean=[0.485, 0.456, 0.406],
+#                          std=[0.229, 0.224, 0.225])
+# ])
+# Model Prediction Function 
+# def model_prediction(test_image, threshold=0.7):
+#     image = Image.open(test_image).convert("RGB")
+#     image = transform(image).unsqueeze(0)  # Add batch dimension
+
+#     with torch.no_grad():
+#         outputs = cnn_model(image)
+#         probabilities = torch.softmax(outputs, dim=1)[0]
+#         predicted_index = torch.argmax(probabilities).item()
+#         confidence = probabilities[predicted_index].item()
+
+#     if confidence < threshold:
+#         return "Not Known", confidence
+#     else:
+#         predicted_class = class_names[predicted_index]
+#         return predicted_class, confidence
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+cnn_model.to(device)
+cnn_model.eval()  # ensure evaluation mode
+
+def model_prediction(test_image, threshold=0.7):
+    image = Image.open(test_image).convert("RGB")
+       # Apply the same transform as validation
+    x = infer_transform(image).unsqueeze(0).to(device)  # add batch dimension
+    # image = transform(image).unsqueeze(0)  # Add batch dimension
+
+    with torch.no_grad():
+        outputs = cnn_model(x)  # use cnn_model here
+        probabilities = torch.softmax(outputs, dim=1)[0]
+        predicted_index = torch.argmax(probabilities).item()
+        confidence = probabilities[predicted_index].item()
+
+    if confidence < threshold:
+        return "Not Known", confidence
+    else:
+        predicted_class = class_names[predicted_index]
+        return predicted_class, confidence
 #Database connection
 import db_utils
 
 db_utils.init_db() 
 
-#Model Prediction
-def model_prediction(test_image):
-    model = tf.keras.models.load_model("tomato_disease_model.h5")
-    image = tf.keras.preprocessing.image.load_img(test_image, target_size=(256, 256))
-    input_arr = tf.keras.preprocessing.image.img_to_array(image)
-    input_arr = np.expand_dims(input_arr, axis=0)  # convert to batch
-    predictions = model.predict(input_arr)
-    predicted_index = np.argmax(predictions)
-    predicted_class = class_names[predicted_index]
-    return predicted_class
+# #Model Prediction
+# def model_prediction(test_image, threshold=0.7):
+#     model = tf.keras.models.load_model("best1_model.h5")
+#     image = tf.keras.preprocessing.image.load_img(test_image, target_size=(224, 224))
+#     input_arr = tf.keras.preprocessing.image.img_to_array(image)
+#     input_arr = np.expand_dims(input_arr, axis=0)  # convert to batch
+#     predictions = model.predict(input_arr)
+
+#     predicted_index = np.argmax(predictions)
+#     confidence = float(predictions[0][predicted_index]) # probability of predicted class
+
+#     if confidence< threshold:
+#         return "Not Known", confidence
+#     else:
+#         predicted_class=class_names[predicted_index]
+#         return predicted_class, confidence
+    
+    
 #Precaution / Prevention tips
-genai.configure(api_key="AIzaSyBhZHzQJ2a5Ll35ICau_LRFhSkpbN9r-B0EY")
-model = genai.GenerativeModel("gemini-1.5-flash")
+genai.configure(api_key="AIzaSyCNOj54zXIYg2N4tQni5rNfiHL5K-i5I6o")
+# model = genai.GenerativeModel("gemini-1.5-flash")
 import requests
 def get_precaution_from_ai(disease_name):
     try:
         res = requests.post(
-            "http://localhost:5000/precaution",
+            "http://localhost:5001/precaution",
             json={"disease": disease_name},
             timeout=10
         )
@@ -100,28 +210,28 @@ if(app_mode=="Home"):
      Ready to identify plant diseases?  
     Head over to the **Disease Recognition** tab in the sidebar to get started!
     """)
-# elif app_mode == "View History":
-#     st.header(" Prediction & Precaution History")
+elif app_mode == "View History":
+    st.header(" Prediction & Precaution History")
 
-#     # --- Prediction History ---
-#     st.subheader(" Model Prediction History")
-#     prediction_data = db_utils.get_prediction_history()
-#     if prediction_data:
-#         st.table(
-#             [{"Disease": row[0], "Timestamp": row[1]} for row in prediction_data]
-#         )
-#     else:
-#         st.info("No prediction history found.")
+    # --- Prediction History ---
+    st.subheader(" Model Prediction History")
+    prediction_data = db_utils.get_prediction_history()
+    if prediction_data:
+        st.table(
+            [{"Disease": row[0], "Timestamp": row[1]} for row in prediction_data]
+        )
+    else:
+        st.info("No prediction history found.")
 
-#     # --- Precaution History ---
-#     st.subheader(" Gemini Precaution History")
-#     precaution_data = db_utils.get_precaution_history()
-#     if precaution_data:
-#         st.table(
-#             [{"Disease": row[0], "Precaution": row[1], "Timestamp": row[2]} for row in precaution_data]
-#         )
-#     else:
-#         st.info("No precaution history found.")
+    # --- Precaution History ---
+    st.subheader(" Gemini Precaution History")
+    precaution_data = db_utils.get_precaution_history()
+    if precaution_data:
+        st.table(
+            [{"Disease": row[0], "Precaution": row[1], "Timestamp": row[2]} for row in precaution_data]
+        )
+    else:
+        st.info("No precaution history found.")
 #About Project
 elif(app_mode=="About"):
     st.header("About")
@@ -141,10 +251,6 @@ elif(app_mode=="Disease Recognition"):
     st.header("Disease Recognition")
     test_image = st.file_uploader("Upload an Image:")
 
-    predicted_disease= None
-    precaution= None
-
-
     if test_image:
         file_type = test_image.type
         valid_types = ['image/jpeg', 'image/png']
@@ -156,38 +262,31 @@ elif(app_mode=="Disease Recognition"):
                 st.image(test_image, use_column_width=True)
 
             if st.button("Predict"):
-                st.subheader("Our Prediction")
-                predicted_disease = model_prediction(test_image)
-                st.success(f"Model Prediction: **{predicted_disease}**")
+                st.subheader(" Our Prediction")
 
-                with st.spinner("Generating precaution tips using Gemini AI..."):
-                    if predicted_disease.lower() == "tomato___healthy":
-                       precaution = "This leaf is healthy. No remedies are required."
-                    else:
-                     prompt = (
-                        f"You are a plant pathologist. Give 2–3 short and technical remedy suggestions "
-                        f"for the tomato leaf disease: {predicted_disease}. Keep it clear, practical, "
-                        f"and easy for farmers to follow. No long paragraphs."
-                    )
-                     
-                     precaution = get_precaution_from_ai(prompt)
-            # try:
-            #     response = requests.post(
-            #         "http://localhost:5000/precaution",
-            #         json={"disease": prompt},
-            #         timeout=10
-            #     )
-            #     if response.status_code == 200:
-            #         precaution = response.json().get("Precaution", "Could not parse suggestions.")
-            #     else:
-            #         precaution = "Could not fetch suggestions right now. Please try again later."
-            # except Exception as e:
-            #     precaution = f"Gemini service unreachable: {str(e)}"
+                predicted_disease, confidence  = model_prediction(test_image)
 
-    st.markdown(f"**Precaution & Treatment Tips for {predicted_disease}:**\n\n{precaution}")               
+                if predicted_disease == "Not Leaf":
+                    st.warning(" Not leaf detected. Unable to provide recommendations.")
+                    precaution = "N/A"
+                if predicted_disease == "Not Known":
+                    st.warning(f"Prediction below confidence threshold.Output: **Not Known**")
+                    precaution = "N/A"
+                else:
+                    st.success(f" Model Prediction: **{predicted_disease}** ")
+
+                if predicted_disease == "Unknown Diseases":
+                    st.warning(" Unknown disease detected. Unable to provide recommendations.")
+                    precaution = "N/A"
+                else:
+
+                    with st.spinner(" Generating precaution tips using Gemini AI..."):
+                        precaution = get_precaution_from_ai(predicted_disease)
+
+                    st.markdown(f" **Precaution & Treatment Tips for {predicted_disease}:**\n\n{precaution}")                
 # Save prediction and precaution to the database
-    db_utils.save_prediction(predicted_disease)
-    db_utils.save_precaution(predicted_disease, precaution)
+                db_utils.save_prediction(predicted_disease)
+                db_utils.save_precaution(predicted_disease, precaution)
         
 elif app_mode == "View History":
     st.markdown("##  Prediction History")

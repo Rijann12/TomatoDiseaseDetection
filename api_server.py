@@ -14,7 +14,7 @@ app = Flask(__name__)
 db_utils.init_db()
 
     # Configure Gemini (IMPORTANT: In a real app, use environment variables for API keys!)
-genai.configure(api_key="AIzaSyBhZHzQJ2a5Ll35ICau_LRFhSkpbN9r-B0EY") # Use your actual Gemini API key
+genai.configure(api_key="AIzaSyCNOj54zXIYg2N4tQni5rNfiHL5K-i5I6o") # Use your actual Gemini API key
 gemini_model = genai.GenerativeModel("gemini-1.5-flash")
 
     # Load TensorFlow Model (load once when app starts to avoid reloading for every request)
